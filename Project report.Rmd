@@ -1,0 +1,365 @@
+---
+title: "Predicting Party Preference through Bayesian networks"
+author: "Marco Cazzola (matr. 964573)"
+subtitle: 'Project for Probabilistic Modelling course'
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(latex2exp)
+library(ggpubr)
+library(scales)
+library(bnlearn)
+library(Rgraphviz)
+library(reshape2)
+library(caret)
+library(gRain)
+
+```
+
+# Introduction
+
+The present work is inspired by the study of Pippa Norris and Ronald Inglehart investigating support for populist parties in Western democracies. In their book *Cultural Backlash* (2019), the authors argue that while the younger generations (and society in general) are getting more and more progressive, older people become feeling as "stranger in their own land", since the values according to which they were educated are no longer dominant. As a result, a *tipping point* has emerged, where conservatives have become increasingly resentful at finding themselves becoming the minority. The authors' hypothesis is that the tipping point in public opinion can catalyze social conservatives into voting for authoritarian-populist leaders.
+
+This paper wants to test Norris and Inglehart's hypothesis in the Italian context, by building a discrete Bayesian network that predicts party preference based on individual's characteristics, both in terms of sociodemographics and moral values. As argued in the book Cultural Backlash, the expectations are that, as we condition on characteristics like age, education or urbanization, party preference should change substantially; in particular, we expect the older people, low educated and living in the countryside to be far more likely to support conservative values. On the contrary, younger people, highly educated and living in a big city are expected to support progressive values and vote accordingly. 
+
+# Data set description
+
+The data we will use come from the 9th wave of the *European Social Survey* (ESS)\footnote[1]{Since the variables' names have been left unchanged, you can refer to the \href{https://www.europeansocialsurvey.org/docs/round9/survey/ESS9_appendix_a7_e03_1.pdf}{ESS9 codebook}  for further details.} and regards exclusively the Italian context. The variables that we will use throughout the analysis are: 
+
+* `prtvtcit`: Party voted for in last national election (2018, in case of Italy). Party preference has been recoded in just three groups: `M5S`, for those who voted *Movimento 5 Stelle*; `CSX` for those who voted for center-left parties (PD, +Europa, Civica Popolare Lorenzin, LeU); `CDX` for those who voted for center-right parties (Forza Italia, Lega Nord, FdI, UDC). Those who did not vote for any of these parties were dropped from the analysis. 
+* `euftf`: Support for European Union, on a scale from 0 to 10. The numerical scale has been recoded into three categories: `LOW` for values lower than 4; `MODERATE` for values between 4 and 6 (included); `HIGH` for values greater than 6. 
+* `imwbcnt`: Support for immigration, on a scale from 0 to 10. The numerical scale has been recoded into three categories: `LOW` for values lower than 4; `MODERATE` for values between 4 and 6 (included); `HIGH` for values greater than 6.
+* `rlgdgr`: Level of religiosity, on a scale from 0 to 10. The numerical scale has been recoded into three categories: `LOW` for values lower than 4; `MODERATE` for values between 4 and 6 (included); `HIGH` for values greater than 6.
+* `stflife`: Level of life satisfaction, on a scale from 0 to 10. The numerical scale has been recoded into three categories: `LOW` for values lower than 4; `MODERATE` for values between 4 and 6 (included); `HIGH` for values greater than 6.
+* `gincdif`: Support for redistributive policies, on a scale from 1 to 5. The numerical scale has been recoded into three categories: `HIGH` for values lower than 3; `MODERATE` for values equal to 3; `LOW` for values greater than 3.
+* `hmsacld`: Support for gay rights, on a scale from 1 to 5. The numerical scale has been recoded into three categories: `HIGH` for values lower than 3; `MODERATE` for values equal to 3; `LOW` for values greater than 3.
+* `edlveit`: The 21 categories describing the level of education have been recoded into just three classes: `Low edu`, for people having a level of education below the diploma (classes from 1 to 7); `College edu`, for those having a diploma (classes from 8 to 10); `University edu`, for those having a level of education above the diploma (classes from 11 to 21). Observations having `Other` as level of education were discarded. 
+* `domicil`: The level of urbanization where the individual lives. There are four classes: `Big city`, `Suburbs`, `Small city`, `Countryside` (the latter obtained by joining *Country village* and *Farm* original categories). 
+* `hincfel`: The level of subjective economic insecurity, measured as how the individual is living with current household's income. There are three possible categories: `Comfortably`, `Coping` and `Difficult` (the latter obtained by joining the original `Difficult` and `Very difficult` categories). 
+* `lrscale`: Ideological self-placement on a scale from 0 to 10, where 0 represents extreme left and 10 extreme right. The numerical scale has been recoded into three categories: `LEFT` for values lower than 4; `MODERATE` for values between 4 and 6 (included); `RIGHT` for values greater than 6.
+* `yrbrn`: The respondent's year of birth. The numerical variable has been recoded into four categories, as done by Norris and Inglehart. In particular, the transformation shown in the table has been applied. Individuals that were born after 1996 have been discarded from the analysis (due to the limited number of cases). 
+
+```{=latex}
+\setlength{\arrayrulewidth}{1.2pt}
+\begin{center}
+\begin{table}[h!]
+\center
+\begin{tabular}{c c} 
+ \hline \\[-5pt]
+ \textbf{Original year of birth} & \textbf{Categorization} \\[3pt]
+ \hline\\[-5pt]
+ < 1945 & Interwar \\[3pt]
+ 1946 - 1964 & Boomers \\[3pt]
+ 1965 - 1979 & Generation X \\[3pt]
+ 1980 - 1996 & Millennials \\[3pt]
+ \hline
+\end{tabular}
+\end{table}
+\end{center}
+```
+
+The resulting data set, cleaned from any missing value, was composed of 1028 observations for each of the 12 variables; their distribution is shown below. 
+
+```{r DataImport}
+dta <- read.csv('final_data.csv')
+dta[, 2:7] <- lapply(dta[, 2:7], factor, levels=c('LOW', 'MODERATE', 'HIGH'), ordered=TRUE)
+dta$prtvtcit <- factor(dta$prtvtcit, levels=c('M5S', 'CSX', 'CDX'), ordered=TRUE)
+dta$edlveit <- factor(dta$edlveit, levels=c('Low edu', 'College edu', 'University edu'), ordered=TRUE)
+dta$domicil <- factor(dta$domicil, levels=c('Countryside', 'Small city', 'Suburbs', 'Big city'), ordered=TRUE)
+dta$hincfel <- factor(dta$hincfel, levels=c('Difficult', 'Coping', 'Comfortable'), ordered=TRUE)
+dta$yrbrn <- factor(dta$yrbrn, levels=c('Interwar', 'Boomers', 'Gen X', 'Millennials'), ordered=TRUE)
+dta$lrscale <- factor(dta$lrscale, levels=c('LEFT', 'MODERATE', 'RIGHT'), ordered=TRUE)
+
+summary(dta)
+```
+
+Notice how our target variable, `prtvtcit`, is quite nicely distributed; all the other variables, perhaps with the exception of `euftf`, are instead skewed: for example, there are few people showing high support for immigrants, and the majority of the people show low support for gay rights. 
+
+# Methodology
+
+As we said in the Introduction, the goal of the paper is to build a discrete Bayesian network that predicts party preference based on the individual's characteristics reported in the data set. The obtained network will then be used to study how the variables interact with one another and make inference. \
+The first step is therefore to learn the structure of the graph. We will do so in two ways: one time relying exclusively on learning algorithms, another time by taking into account prior knowledge about variables' relationships. In particular, we will assume that: 
+
+* `yrbrn` $\rightarrow$ `edlveit`: as argued also in the book *Cultural Backlash*, high-income Western societies have been experiencing growing access to highest levels of education, so that the year when one is born can influence their level of education; 
+* `edlveit` $\rightarrow$ `hincfel`: it is a well known and established fact that the higher the level of education of an individual, the higher their level of income; 
+* `hincfel` $\rightarrow$ `stflife`: one of the most relevant predictors of life satisfaction is the level of income.
+
+Notice how all these assumptions are perfectly met by the data, as shown by the plots below. 
+
+```{r WhitelistPlots, fig.width=10}
+yr <- ggplot(dta, aes(yrbrn)) + geom_bar(aes(fill=edlveit), color='black', position='fill') + 
+  scale_y_continuous(labels = scales::percent) + theme_bw() +
+  labs(x='', y='', fill='', title='Level of education by\ngenerational cohort', caption=TeX(paste('p-value $\\chi^2$ test:', signif(chisq.test(dta$yrbrn, dta$edlveit)$p.value, 3)))) +
+  scale_fill_brewer(palette='Set2', labels=c('Low\nedu', 'College\nedu', 'University\nedu')) + theme(legend.position = 'top', plot.caption = element_text(hjust = 0.5, size=15))
+
+ed <- ggplot(dta, aes(edlveit)) + geom_bar(aes(fill=hincfel), color='black', position='fill') + 
+  scale_y_continuous(labels = scales::percent) + theme_bw() +
+  labs(x='', y='', fill='', title="Feeling about household's\nincome by level of education", caption=TeX(paste('p-value $\\chi^2$ test:', signif(chisq.test(dta$edlveit, dta$hincfel)$p.value, 3)))) +
+  scale_fill_brewer(palette='Set2', labels=c('Difficult', 'Coping', 'Comfortable')) + theme(legend.position = 'top', plot.caption = element_text(hjust = 0.5, size=15))
+
+inc <- ggplot(dta, aes(hincfel)) + geom_bar(aes(fill=stflife), color='black', position='fill') + 
+  scale_y_continuous(labels = scales::percent) + theme_bw() +
+  labs(x='', y='', fill='', title="Level of life satisfaction by\nfeeling about household's income", caption=TeX(paste('p-value $\\chi^2$ test:', signif(chisq.test(dta$hincfel, dta$stflife)$p.value, 3)))) +
+  scale_fill_brewer(palette='Set2') + theme(legend.position = 'top', plot.caption = element_text(hjust = 0.5, size=15))
+
+ggarrange(yr, ed, inc, ncol=3)
+```
+
+Moreover, we will also assume that: 
+
+* `yrbrn` cannot be (of course) influenced by any variable;
+* `prtvtcit` cannot influence any variable, since we are assuming that `prtvtcit` is our target variable that is explained by the other variables in the data set;
+* `rlgdgr` cannot be influenced by `imwbcnt`, `hmsacld`, `euftf` and `gincdif` (while the reverse may be plausible); 
+* `hincfel` cannot be influenced by `stflife`, `lrscale`, `euftf`, `imwbcnt`, `gincdif` and `hmsacld` (while the reverse may be plausible);
+* `edlveit` cannot be influenced by `gincdif`, `euftf`, `imwbcnt`, `hmsacld` and `hincfel` (while the reverse may be plausible). 
+
+The methods we will use to learn the graph structure are: 
+
+1. *Grow-Shrink*: a constraint-based method based on iteratively testing conditional independencies; 
+2. *Interleaved Incremental Association*: a variant of traditional IAMB algorithm which is more robust to false positives; 
+3. *Hill-Climbing with AIC score*: a score-based learning method; 
+4. *Hill-Climbing with BIC score*: a score-based learning method with a larger penalty than AIC. 
+
+Each of these algorithms will be run with and without prior knowledge assumptions. In order to select the optimal one, we run 10 times cross-validation on the original data set and evaluate the results according to the traditional misclassification error, where our target variable is `prtvtcit`, the party preference. The results are plotted below. 
+
+```{r CV, warning=FALSE, fig.height=7, fig.asp=0.5, fig.height=7, out.width="50%"}
+#Blacklist
+excl <- c(rep('prtvtcit', dim(dta)[2] - 1), colnames(dta)[-c(1, 11)], 
+          c('stflife', 'imwbcnt', 'hmsacld', 'euftf', 'gincdif', 'gincdif', 'euftf', 'imwbcnt', 'hmsacld', 'hincfel', 'lrscale', 'euftf', 'imwbcnt', 'gincdif', 'hmsacld'),
+          colnames(dta)[-1], rep('yrbrn', dim(dta)[2] - 2),
+          c('hincfel', 'rlgdgr', 'rlgdgr', 'rlgdgr', 'rlgdgr', 'edlveit', 'edlveit', 'edlveit', 'edlveit', 'edlveit', 'hincfel', 'hincfel', 'hincfel', 'hincfel', 'hincfel'))
+
+bl <- matrix(excl, ncol=2, byrow=F, dimnames=list(NULL, c('from', 'to')))
+
+#Whitelist
+wl <- matrix(c('yrbrn', 'edlveit', 
+               'edlveit', 'hincfel', 
+               'hincfel', 'stflife'), 
+             ncol=2, byrow=T, dimnames=list(NULL, c('from', 'to')))
+
+###Grow-Shrink
+gs.cv <- bn.cv(dta, 'gs', algorithm.args = list(blacklist=bl[1:11,]), 
+               loss='pred', loss.args = list(target='prtvtcit'), 
+               runs=10)
+
+###Inter IAMB
+iamb.cv <- bn.cv(dta, 'inter.iamb', algorithm.args = list(blacklist=bl[1:11,]), 
+                 loss='pred', loss.args = list(target='prtvtcit'), 
+                 runs=10)
+
+###Hill-Climbing with AIC
+hc.aic.cv <- bn.cv(dta, 'hc', algorithm.args = list(blacklist=bl[1:11,], score='aic', restart=10), 
+                   loss = 'pred', loss.args = list(target='prtvtcit'), 
+                   runs=10)
+
+###Hill-Climbing with BIC
+hc.bic.cv <- bn.cv(dta, 'hc', algorithm.args = list(blacklist=bl[1:11,], score='bic', restart=10), 
+                   loss = 'pred', loss.args = list(target='prtvtcit'), 
+                   runs=10)
+
+###Grow-Shrink with knowledge
+gs.cv.k <- bn.cv(dta, 'gs', algorithm.args = list(blacklist=bl, whitelist=wl), 
+               loss='pred', loss.args = list(target='prtvtcit'), 
+               runs=10)
+
+###Inter IAMB with knowledge
+iamb.cv.k <- bn.cv(dta, 'inter.iamb', algorithm.args = list(blacklist=bl, whitelist=wl), 
+                 loss='pred', loss.args = list(target='prtvtcit'), 
+                 runs=10)
+
+###Hill-Climbing with AIC with knowledge
+hc.aic.cv.k <- bn.cv(dta, 'hc', algorithm.args = list(blacklist=bl, whitelist=wl, score='aic', restart=10), 
+                   loss = 'pred', loss.args = list(target='prtvtcit'), 
+                   runs=10)
+
+###Hill-Climbing with BIC with knowledge
+hc.bic.cv.k <- bn.cv(dta, 'hc', algorithm.args = list(blacklist=bl, whitelist=wl, score='bic', restart=10), 
+                   loss = 'pred', loss.args = list(target='prtvtcit'), 
+                   runs=10)
+
+###CV plot without knowledge
+par(mfrow = c(1, 2))
+plot(gs.cv, iamb.cv, hc.aic.cv, hc.bic.cv, 
+     xlab=c('Grow-Shrink', 'Inter IAMB', 'Hill-Climbing\n(AIC)', 'Hill-Climbing\n(BIC)'), 
+     main='Without prior knowledge')
+
+###CV plot with knowledge
+plot(gs.cv.k, iamb.cv.k, hc.aic.cv.k, hc.bic.cv.k, 
+     xlab=c('Grow-Shrink', 'Inter IAMB', 'Hill-Climbing\n(AIC)', 'Hill-Climbing\n(BIC)'), 
+     main='With prior knowledge')
+```
+
+Both with and without prior knowledge, the best result is achieved by Hill-Climbing with AIC score. Moreover, the error rate of the two models obtained with that algorithm are not significantly different, and they all lie around 30%. In order to have a more interpretable network, we select the one obtained using prior knowledge assumptions. 
+
+# Building the network
+
+After splitting the original data set into a training set (80% of the observations) and a test set (20% of the observations), we train the algorithm on the training set and test the resulting network on the test set to predict party preference. The results are shown below. 
+
+```{r ConfusionMatrix, fig.height=4, fig.width=10}
+#Train the model
+set.seed(123)
+train <- sample(1:nrow(dta), round(0.8*nrow(dta)))
+
+hc.bn <- hc(dta[train,], score='aic', whitelist = wl, blacklist=bl, restart = 10)
+mod <- bn.fit(hc.bn, data=dta[train, ])
+
+
+###Make predictions
+preds <- bnlearn:::predict.bn.fit(mod, "prtvtcit",dta[-train, ])
+test.err <- mean(preds != dta[-train, 1])
+
+#Confusion matrix details
+t <- table(predicted=preds, actual=dta[-train, 1])
+
+cm <- confusionMatrix(t)$byClass[,c('Sensitivity', 'Specificity', 'Precision', 'Recall', 'Balanced Accuracy')] %>%
+  as.data.frame()
+cm$prt <- factor(c('M5S', 'CSX', 'CDX'), ordered=TRUE)
+cm <- melt(cm, id='prt')
+cm$variable <- factor(cm$variable)
+
+ggplot(cm, aes(x=variable)) + geom_bar(stat='identity', aes(y=value, fill=prt), position='dodge', color='black') +
+  theme_minimal() + scale_fill_manual(values=c("#32A1FE", "#FC0603", "#FDD011")) + labs(x='', y='', fill='Class') +
+  geom_hline(yintercept = 0)
+```
+
+\newpage
+
+The plot shows how, irrespective of the metric we consider, `CDX` has always the highest score, while `M5S` has the lowest. This seems to suggest that `CDX` electors are easier to recognize than `M5S` supporters. The performance of the model are coherent with the ones observed through cross-validation, as the misclassification rate on the test set is around $30\%$. We now plot the graph learned through the Hill-Climbing algorithm with AIC score. 
+
+\ \ 
+
+```{r Graph, fig.keep='last'}
+std.opt <- list(nodes = nodes(hc.bn), arcs = arcs(hc.bn), 
+                col = 'grey', fill = '#377EB8', textCol = 'white')
+pp <- graphviz.plot(hc.bn, highlight = std.opt)
+
+#Change nodes' layout
+nodes.attrs <- nodeRenderInfo(pp)
+#COLORS (FILL)
+nodes.attrs$fill[colnames(dta)[8:11]] <- '#7570B3'
+nodes.attrs$fill['prtvtcit'] <- '#1B9E77'
+nodes.attrs$fill['stflife'] <- '#D95F02'
+#SIZE
+nodes.attrs$height[c('yrbrn', 'lrscale')] <- 80
+nodes.attrs$height['prtvtcit'] <- 100
+nodes.attrs$height[colnames(dta)[-c(1, 11, 12)]] <- 60
+#LWIDTH
+nodes.attrs$lWidth[c('yrbrn', 'lrscale')] <- 40
+nodes.attrs$lWidth['prtvtcit'] <- 50
+nodes.attrs$lWidth[colnames(dta)[-c(1, 11, 12)]] <- 30
+#RWIDTH
+nodes.attrs$rWidth[c('yrbrn', 'lrscale')] <- 40
+nodes.attrs$rWidth['prtvtcit'] <- 50
+nodes.attrs$rWidth[colnames(dta)[-c(1, 11, 12)]] <- 30
+#TEXTSIZE
+s <- c(32, rep(15, 9), 28, 26)
+names(s) <- colnames(dta)
+nodes.attrs$fontsize <- s
+#FINAL PLOT
+nodeRenderInfo(pp) <- nodes.attrs
+renderGraph(pp)
+```
+
+\newpage
+
+### Dependencies
+
+The only two factors directly influencing party preference are `lrscale` (ideological self-placement) and `yrbrn` (year of birth). The hypothesis made by Norris and Inglehart is only partially met: in fact, as we can see from the graphs below, while it is true that older generational cohort tend to support conservative values and vote for center-right and right-wing parties, younger generations are indeed attracted by progressive values, but their electoral support goes to populist parties like M5S, rather than to traditional progressive parties like PD and LeU. \
+The ideological self-placement is of course a strong predictor of party preference, and it is interesting to notice how, according to the graphs below, a person who poses herself in the `LEFT` political spectrum has more or less the same probability of being a M5S supporter with respect to another person having the opposite placement. On the contrary, those who see themselves as `MODERATE` are far more likely to vote M5S than any other party. \
+Finally, another interesting dependency is the one between support for EU integration and level of education: while there is no big difference between those having lower degree of education and those with a college degree, the real gap is between those having a university degree and those who have not, with the former category showing a substantially higher support for EU integration. 
+
+\ \ 
+
+```{r DependenciesPlots, fig.width=10}
+yr <- ggplot(dta, aes(yrbrn)) + geom_bar(aes(fill=prtvtcit), color='black', position='fill') + 
+  scale_y_continuous(labels = scales::percent) + theme_bw() +
+  labs(x='', y='', fill='', title='Party preference by\ngenerational cohort', caption=TeX(paste('p-value $\\chi^2$ test:', signif(chisq.test(dta$yrbrn, dta$prtvtcit)$p.value, 3)))) +
+  scale_fill_manual(values=c("#FDD011", "#FC0603", "#32A1FE")) + theme(legend.position = 'top', plot.caption = element_text(hjust = 0.5, size=15))
+
+lr <- ggplot(dta, aes(lrscale)) + geom_bar(aes(fill=prtvtcit), color='black', position='fill') + 
+  scale_y_continuous(labels = scales::percent) + theme_bw() +
+  labs(x='', y='', fill='', title="Party preference by\nideological self-placement", caption=TeX(paste('p-value $\\chi^2$ test:', signif(chisq.test(dta$lrscale, dta$prtvtcit)$p.value, 3)))) +
+  scale_fill_manual(values=c("#FDD011", "#FC0603", "#32A1FE")) + theme(legend.position = 'top', plot.caption = element_text(hjust = 0.5, size=15))
+
+eu <- ggplot(dta, aes(edlveit)) + geom_bar(aes(fill=euftf), color='black', position='fill') + 
+  scale_y_continuous(labels = scales::percent) + theme_bw() +
+  labs(x='', y='', fill='', title="Support for EU integration\nby level of education", caption=TeX(paste('p-value $\\chi^2$ test:', signif(chisq.test(dta$edlveit, dta$euftf)$p.value, 3)))) +
+   scale_fill_brewer(palette='Set2') + theme(legend.position = 'top', plot.caption = element_text(hjust = 0.5, size=15))
+
+ggarrange(yr, lr, eu, ncol=3)
+```
+
+### Independencies
+
+* `domicil` $\bot$ `euftf` $\mid$ `edlveit`, `yrbrn`: the aversion or support for the European Union does not seem to depend on the place where one lives, once we take into account the level of education and the year of birth. This seems to suggest that big city are more cosmopolitans because they are inhabited by young and highly educated people, rather than because of some inner characteristic.
+* `edlveit` $\bot$ `hmsacld` $\mid$ `rlgdgr`, `euftf`: the support for gay rights does not seem to depend on education, once we take into account religiosity and support for EU integration. This seems to suggest that support for gay rights has mainly to do with someone's personal values, rather than with his/her education.
+* `edlveit` $\bot$ `lrscale` $\mid$ `euftf`, `hmsacld`: the same reasoning may be applied to this evidence, according to which the level of education is independent from the ideological self-placement, once we take into account some personal values like support for the EU integration and gay rights. 
+
+# Inference 
+
+We now exploit the graph structure to make some inference about how the distribution of votes changes as we condition on some electorate's characteristics. For example, we may be looking at how the year of birth and the level of education influence the party preference. 
+
+```{r Infer1, warning=FALSE, fig.height=3.5}
+full.mod <- bn.fit(hc.bn, data=dta)
+junc <- as.grain(full.mod)
+
+#Marginal distr of the target variable
+prt.marg <- querygrain(junc, nodes='prtvtcit', type='marginal')$prtvtcit
+
+#Evidence and distribution for old and low edu
+ev1 <- setFinding(junc, nodes = c('yrbrn', 'edlveit'), states = c('Interwar', 'Low edu'))
+q1a <- querygrain(ev1, nodes = "prtvtcit",type = 'conditional')
+
+#Evidence and distribution for young and uni edu
+ev1 <- setFinding(junc, nodes = c('yrbrn', 'edlveit'), states = c('Millennials', 'University edu'))
+q1b <- querygrain(ev1, nodes = "prtvtcit",type = 'conditional')
+
+#Plot
+df <- data.frame(q1a, q1b, prt.marg, prt=c('M5S', 'CSX', 'CDX')) %>%
+  melt(id='prt')
+df$prt <- factor(df$prt, levels=c('M5S', 'CSX', 'CDX'))
+df$variable <- factor(df$variable, levels=c('prt.marg', 'q1a', 'q1b'))
+
+ggplot(df, aes(x=prt)) + geom_bar(aes(y=value, fill=variable), color='black', stat='identity', position='dodge') +
+  theme_bw() + labs(x='', y='Distribution', fill='Evidence\n') +
+  scale_fill_manual(labels = c("Original \n distribution \n", "Interwar generation, \n low educated\n", "Millennials, \n university educated\n"), 
+                    values = c('#1B9E77', '#D95F02', '#7570B3'))
+```
+
+Interestingly, parties categorized as `CSX` and the ones from `CDX` collect approximately the same consensus among the older and lower educated generation: this means that, at least in Italy, older and low educated people are not so unbalanced in favor of right-wing and conservative parties. Another interesting point is that, for what concerns university educated Millennials, the support for the `CDX` area is only slightly lower with respect to the support for `CSX` parties, and the real difference is between these two blocks (which we can think of as "traditional" parties) and M5S, a populist party which, at least partially, supports progressive values, especially from a welfare state policy point of view. 
+
+\newpage
+
+Another potentially relevant inference in which we could be interested in is understanding how personal opinions about LGBTQ+ rights, immigration and European integration influence the party preference. 
+
+```{r Infer2, warning=FALSE, fig.height=3.5}
+ev2 <- setFinding(junc, nodes = c('euftf', 'imwbcnt', 'hmsacld'), states = c('LOW', 'LOW', 'LOW'))
+q2a <- querygrain(ev2, nodes = "prtvtcit",type = 'conditional')
+
+ev2 <- setFinding(junc, nodes = c('euftf', 'imwbcnt', 'hmsacld'), states = c('HIGH', 'HIGH', 'HIGH'))
+q2b <- querygrain(ev2, nodes = "prtvtcit",type = 'conditional')
+
+df <- data.frame(q2a, q2b, prt.marg, prt=c('M5S', 'CSX', 'CDX')) %>%
+  melt(id='prt')
+df$prt <- factor(df$prt, levels=c('M5S', 'CSX', 'CDX'))
+df$variable <- factor(df$variable, levels=c('prt.marg', 'q2a', 'q2b'))
+
+ggplot(df, aes(x=prt)) + geom_bar(aes(y=value, fill=variable), color='black', stat='identity', position='dodge') +
+  theme_bw() + labs(x='', y='Distribution', fill='Evidence') +
+  scale_fill_manual(labels = c("\nOriginal \n distribution \n", "Against EU, \n against immigration, \n against LGBTQ+ rights \n", 
+                               "Favouring EU, \n favouring immigration, \n favouring LGBTQ+ rights \n"), 
+                    values = c('#1B9E77', '#D95F02', '#7570B3'))
+```
+
+In this context, differences between `CDX` and `CSX` become quite more evident: indeed, the two distributions are quite specular, with those favoring EU, immigration and LGBTQ+ rights supporting mainly parties from `CSX`, while those having opposite position on all these issues are much more likely to vote for `CDX` parties. Once again, we find very interesting evidence about M5S, with those supporting all the issues having only a slightly larger probability of voting M5S with respect to those that oppose all these issues. This confirms the heterogeneous nature of M5S' electorate. 
+
+# Conclusion
+
+In this paper, we investigated the role of sociodemographic characteristics and personal values in determining one's party preference. Using the data from the 9th Wave of the European Social Survey, we built a Bayesian network and exploited the particular structure of this model for better understanding the relationships between small subsets of variables.\
+Among sociodemographic variables, the one having the strongest impact on party preference is the year of birth: in contrast with our starting expectations, we found out that the older generation is not so unbalanced in favor of right-wing parties, and it is indeed quite balanced between the `CDX` and `CSX` area. On the contrary, younger generation tends to support parties that are outside those two traditional blocks, like M5S.\
+If we move from sociodemographic characteristics to personal values and political opinions, we would instead see a much clearer separation between `CDX` and `CSX`, while M5S seems to attract both those having conservative ideas and those with more progressive attitudes. 
